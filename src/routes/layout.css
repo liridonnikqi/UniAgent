@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+
+@theme {
+	--font-sans: Geist, Inter, system-ui, sans-serif;
+	--color-page: #0e0e0d;
+	--color-ink: #f2f1ee;
+	--color-mute: #8c8b86;
+	--color-line: #2e2e2b;
+	--color-chip: #1c1c1a;
+	--color-user: #f2f1ee;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	background: var(--color-page);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
+}
+
+button,
+a {
+	cursor: pointer;
+}
+
+button:disabled {
+	cursor: not-allowed;
+}

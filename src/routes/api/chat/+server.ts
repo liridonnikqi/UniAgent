@@ -56,7 +56,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 				controller.close();
 			} catch (err) {
-				console.error(err);
 				controller.error(err);
 			}
 		}

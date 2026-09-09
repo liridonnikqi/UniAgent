@@ -7,7 +7,7 @@
 <div class="flex flex-1 flex-col justify-center py-10">
 	<p class="text-3xl tracking-tight md:text-4xl">Përshëndetje</p>
 	<p class="mt-3 max-w-md text-[15px] leading-6 text-mute">
-		Më thuaj emrin dhe universitetin që t’i përshtas përgjigjet te ti.
+		Shkruaj emrin dhe universitetin, që t’i bëj përgjigjet më personale.
 	</p>
 
 	<form method="POST" action="?/profile" use:enhance class="mt-8 flex max-w-md flex-col gap-3">

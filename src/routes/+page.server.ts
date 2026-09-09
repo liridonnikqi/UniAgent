@@ -40,7 +40,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			dbError: ''
 		};
 	} catch (err) {
-		console.error(err);
 		return {
 			user: null,
 			sessions: [],

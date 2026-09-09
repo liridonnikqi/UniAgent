@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
-	import Onboarding from '$lib/Onboarding.svelte';
-	import Sidebar from '$lib/Sidebar.svelte';
-	import Thinking from '$lib/Thinking.svelte';
+	import Onboarding from '$lib/components/Onboarding.svelte';
+	import Sidebar from '$lib/components/Sidebar.svelte';
+	import Thinking from '$lib/components/Thinking.svelte';
 	import type { ChatMessage } from '$lib/types';
 
 	let { data, form } = $props();

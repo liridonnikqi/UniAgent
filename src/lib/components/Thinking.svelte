@@ -17,6 +17,6 @@
 		<span class="size-1.5 animate-pulse rounded-full bg-ink/50 [animation-delay:150ms]"></span>
 		<span class="size-1.5 animate-pulse rounded-full bg-ink/30 [animation-delay:300ms]"></span>
 	</span>
-	<span>Duke punuar</span>
+	<span>Duke menduar</span>
 	<span class="tabular-nums">{elapsed}s</span>
 </div>

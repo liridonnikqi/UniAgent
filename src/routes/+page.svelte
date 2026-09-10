@@ -1,5 +1,9 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import { afterNavigate, invalidateAll } from '$app/navigation';
+	import ArrowRight from '@lucide/svelte/icons/arrow-right';
+	import Menu from '@lucide/svelte/icons/menu';
+	import { untrack } from 'svelte';
+	import LogoutModal from '$lib/components/LogoutModal.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Thinking from '$lib/components/Thinking.svelte';
@@ -26,40 +30,243 @@
 		}
 	];
 
-	let messages = $state<ChatMessage[]>([]);
+	function copyMessages(list: ChatMessage[]): ChatMessage[] {
+		return list.map((msg) => ({ ...msg }));
+	}
+
+	function sameTranscript(a: ChatMessage[], b: ChatMessage[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i].role !== b[i].role || a[i].content !== b[i].content) return false;
+		}
+		return true;
+	}
+
+	// svelte-ignore state_referenced_locally
+	let messages = $state<ChatMessage[]>(copyMessages(data.messages));
 	let sidebarOpen = $state(false);
+	let logoutOpen = $state(false);
 	let input = $state('');
 	let loading = $state(false);
 	let thinking = $state(false);
 	let error = $state('');
-	let bottom = $state<HTMLDivElement | undefined>();
+	let scroller = $state.raw<HTMLElement | undefined>();
+	let composer = $state.raw<HTMLTextAreaElement | undefined>();
+	let pinToBottom = $state(true);
+	// svelte-ignore state_referenced_locally
+	let hasMore = $state(data.hasMore);
+	let loadingOlder = $state(false);
+	let liveReply = $state('');
+	let incoming = '';
+	let typeTimer = 0;
+	let stickRaf = 0;
+	let resumedFor = $state('');
+	// svelte-ignore state_referenced_locally
+	let seenSession = $state(data.sessionId);
 	const sessionId = $derived(data.sessionId);
-
-	$effect(() => {
-		if (!loading && !thinking) {
-			messages = data.messages;
-		}
-	});
-
-	$effect(() => {
-		messages.at(-1)?.content;
-		thinking;
-		if (messages.length || thinking) {
-			bottom?.scrollIntoView({ behavior: loading ? 'auto' : 'smooth' });
-		}
-	});
-
 	const ready = $derived(Boolean(data.user?.name && data.user?.university));
+	const pending = $derived(data.messages.at(-1)?.role === 'user');
 
-	async function send(text = input) {
+	afterNavigate(() => {
+		pinToBottom = true;
+		const pin = () => {
+			if (!scroller) return;
+			scroller.scrollTop = scroller.scrollHeight;
+		};
+		pin();
+		requestAnimationFrame(pin);
+		setTimeout(pin, 80);
+	});
+
+	function onScroll() {
+		if (!scroller) return;
+		const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+		const pinned = gap < 32;
+		if (pinned !== pinToBottom) pinToBottom = pinned;
+	}
+
+	function resizeComposer() {
+		if (!composer) return;
+		composer.style.height = 'auto';
+		composer.style.height = `${composer.scrollHeight}px`;
+		stickBottom();
+	}
+
+	function stickBottom() {
+		if (!scroller || !pinToBottom) return;
+		if (stickRaf) return;
+		stickRaf = requestAnimationFrame(() => {
+			stickRaf = 0;
+			if (!scroller || !pinToBottom) return;
+			scroller.scrollTop = scroller.scrollHeight;
+		});
+	}
+
+	async function loadOlder() {
+		if (loadingOlder || !hasMore || !messages[0]?.created_at) return;
+		pinToBottom = false;
+		loadingOlder = true;
+		const prevHeight = scroller?.scrollHeight ?? 0;
+
+		try {
+			const before = encodeURIComponent(messages[0].created_at);
+			const res = await fetch(`/api/messages?s=${sessionId}&before=${before}`);
+			const payload = await res.json();
+			if (!res.ok || !Array.isArray(payload.messages)) return;
+
+			messages = [...payload.messages, ...messages];
+			hasMore = Boolean(payload.hasMore);
+
+			requestAnimationFrame(() => {
+				if (!scroller) return;
+				scroller.scrollTop = scroller.scrollHeight - prevHeight;
+			});
+		} catch {
+			error = 'Nuk u ngarkuan mesazhet e vjetra.';
+		} finally {
+			loadingOlder = false;
+		}
+	}
+
+	$effect.pre(() => {
+		const serverSession = data.sessionId;
+		const serverMessages = data.messages;
+		const serverHasMore = data.hasMore;
+
+		untrack(() => {
+			if (serverSession !== seenSession) {
+				seenSession = serverSession;
+				loading = false;
+				thinking = false;
+				error = '';
+				pinToBottom = true;
+				hasMore = serverHasMore;
+				stopTypewriter();
+				liveReply = '';
+				incoming = '';
+				messages = copyMessages(serverMessages);
+				queueMicrotask(stickBottom);
+				return;
+			}
+
+			if (loading || thinking || liveReply) return;
+
+			// Keep optimistic rows and older pages that the latest window does not include.
+			if (messages.length > serverMessages.length) return;
+
+			if (!sameTranscript(messages, serverMessages)) {
+				messages = copyMessages(serverMessages);
+			}
+
+			if (hasMore !== serverHasMore) hasMore = serverHasMore;
+		});
+	});
+
+	$effect(() => {
+		const el = scroller;
+		if (!el) return;
+		const pin = () => {
+			if (scroller !== el || !pinToBottom) return;
+			el.scrollTop = el.scrollHeight;
+		};
+		untrack(pin);
+		const raf = requestAnimationFrame(pin);
+		const later = setTimeout(pin, 80);
+		return () => {
+			cancelAnimationFrame(raf);
+			clearTimeout(later);
+		};
+	});
+
+	$effect(() => {
+		if (!ready || loading || thinking || liveReply || !pending) return;
+		const last = data.messages.at(-1);
+		if (!last || last.role !== 'user') return;
+		const key = `${data.sessionId}:${last.content}`;
+
+		untrack(() => {
+			if (resumedFor === key) return;
+			if (messages.at(-1)?.role === 'assistant') return;
+			resumedFor = key;
+			void send(last.content, true);
+		});
+	});
+
+	function stopTypewriter() {
+		if (typeTimer) {
+			clearTimeout(typeTimer);
+			typeTimer = 0;
+		}
+	}
+
+	function writeLiveReply(text: string) {
+		liveReply = text;
+		const last = messages.at(-1);
+		if (last?.role === 'assistant') {
+			last.content = text;
+			return;
+		}
+		messages = [...messages, { role: 'assistant', content: text, id: crypto.randomUUID() }];
+	}
+
+	function tickTypewriter() {
+		if (!incoming) {
+			typeTimer = 0;
+			return;
+		}
+		thinking = false;
+		const n = incoming.length > 160 ? 2 : 1;
+		writeLiveReply(liveReply + incoming.slice(0, n));
+		incoming = incoming.slice(n);
+		stickBottom();
+		if (!incoming) {
+			typeTimer = 0;
+			return;
+		}
+		typeTimer = window.setTimeout(tickTypewriter, incoming.length > 80 ? 22 : 36);
+	}
+
+	function startTypewriter() {
+		if (typeTimer) return;
+		typeTimer = window.setTimeout(tickTypewriter, 0);
+	}
+
+	function pushStream(piece: string) {
+		if (!piece) return;
+		incoming += piece;
+		startTypewriter();
+	}
+
+	async function waitUntilTyped() {
+		while (incoming || typeTimer) {
+			await new Promise((resolve) => setTimeout(resolve, 24));
+		}
+		stopTypewriter();
+	}
+
+	function commitLiveReply() {
+		stopTypewriter();
+		if (incoming) {
+			writeLiveReply(liveReply + incoming);
+			incoming = '';
+		}
+		liveReply = '';
+	}
+
+	async function send(text = input, resume = false) {
 		const question = text.trim();
 		if (!question || loading || !ready) return;
 
-		messages = [...messages, { role: 'user', content: question }];
+		if (!resume) {
+			messages = [...messages, { role: 'user', content: question, id: crypto.randomUUID() }];
+		}
 		input = '';
+		queueMicrotask(resizeComposer);
 		loading = true;
 		thinking = true;
 		error = '';
+		pinToBottom = true;
+		queueMicrotask(stickBottom);
 
 		try {
 			const res = await fetch('/api/chat', {
@@ -85,20 +292,11 @@
 				if (done) break;
 
 				const piece = decoder.decode(value, { stream: true });
-				if (!piece) continue;
-
-				if (thinking) {
-					thinking = false;
-					messages = [...messages, { role: 'assistant', content: piece }];
-					continue;
-				}
-
-				const last = messages.length - 1;
-				messages[last] = {
-					...messages[last],
-					content: messages[last].content + piece
-				};
+				if (piece) pushStream(piece);
 			}
+
+			await waitUntilTyped();
+			commitLiveReply();
 
 			const last = messages[messages.length - 1];
 			if (!last || last.role !== 'assistant' || !last.content) {
@@ -109,8 +307,10 @@
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Diçka shkoi keq';
 			thinking = false;
-			const last = messages[messages.length - 1];
-			if (last?.role === 'assistant' && !last.content) {
+			stopTypewriter();
+			incoming = '';
+			liveReply = '';
+			if (messages.at(-1)?.role === 'assistant') {
 				messages = messages.slice(0, -1);
 			}
 			if (messages.at(-1)?.role === 'user') {
@@ -129,14 +329,31 @@
 			send();
 		}
 	}
+
+	function onComposerWheel(event: WheelEvent) {
+		if (!composer || composer.scrollHeight <= composer.clientHeight + 1) return;
+		event.stopPropagation();
+	}
+
+	$effect(() => {
+		const el = composer;
+		void input;
+		if (!el) return;
+		untrack(() => {
+			resizeComposer();
+			stickBottom();
+		});
+	});
 </script>
 
-<div class="flex h-dvh flex-col bg-page text-ink">
+<div class="flex h-dvh min-h-0 flex-col overflow-hidden bg-page text-ink">
 	{#if ready}
 		<Sidebar bind:open={sidebarOpen} sessions={data.sessions} {sessionId} />
 	{/if}
 
-	<header class="flex w-full items-center gap-3 px-3 py-3">
+	<LogoutModal bind:open={logoutOpen} />
+
+	<header class="flex w-full shrink-0 items-center gap-3 px-3 py-3">
 		{#if ready}
 			<button
 				type="button"
@@ -144,14 +361,7 @@
 				onclick={() => (sidebarOpen = true)}
 				aria-label="Hap bisedat"
 			>
-				<svg viewBox="0 0 24 24" class="size-6" fill="none" aria-hidden="true">
-					<path
-						d="M4 7h16M4 12h16M4 17h12"
-						stroke="currentColor"
-						stroke-width="1.8"
-						stroke-linecap="round"
-					/>
-				</svg>
+				<Menu class="size-6" strokeWidth={1.8} />
 			</button>
 		{/if}
 
@@ -159,72 +369,95 @@
 
 		<div class="ml-auto flex min-w-0 items-center gap-3">
 			{#if data.user?.name}
-				<p class="truncate text-sm text-mute">
-					{data.user.name} · {data.user.university}
-				</p>
-				<form method="POST" action="?/logout">
+				<div class="flex min-w-0 items-center gap-3">
+					<p class="truncate text-sm text-mute">
+						{data.user.name} · {data.user.university}
+					</p>
 					<button
-						type="submit"
+						type="button"
 						class="cursor-pointer rounded-full bg-white px-4 py-1.5 text-sm text-page"
+						onclick={() => (logoutOpen = true)}
 					>
 						Dil
 					</button>
-				</form>
+				</div>
 			{/if}
 		</div>
 	</header>
 
-	<main class="flex-1 overflow-y-auto px-5">
+	<main
+		class="chat-scroll min-h-0 flex-1 overflow-y-auto px-5"
+		bind:this={scroller}
+		onscroll={onScroll}
+	>
 		<div class="mx-auto flex min-h-full max-w-2xl flex-col">
 			{#if data.dbError}
 				<p class="py-10 text-sm text-red-400">{data.dbError}</p>
 			{:else if !ready}
-				<Onboarding error={form?.error} />
-			{:else if messages.length === 0 && !thinking}
-				<div class="flex flex-1 flex-col justify-center py-10">
-					<p class="text-3xl tracking-tight md:text-4xl">
-						Përshëndetje{data.user?.name ? `, ${data.user.name}` : ''}
-					</p>
-					<p class="mt-3 max-w-md text-[15px] leading-6 text-mute">
-						Pyet për lëndët, provimet, detyrat ose një punim. Unë të ndihmoj hap pas hapi.
-					</p>
-
-					<div class="mt-8 flex flex-wrap gap-2">
-						{#each starters as item (item.label)}
-							<button
-								type="button"
-								class="rounded-full border border-line bg-chip px-4 py-2 text-sm text-ink hover:border-ink/30"
-								onclick={() => send(item.text)}
-							>
-								{item.label}
-							</button>
-						{/each}
-					</div>
-				</div>
+				<Onboarding
+					error={form?.error ?? ''}
+					name={form && 'name' in form ? (form.name ?? '') : ''}
+					university={form && 'university' in form ? (form.university ?? '') : ''}
+				/>
 			{:else}
-				<div class="space-y-6 py-4">
-					{#each messages as msg, i (i)}
-						{#if msg.role === 'user'}
-							<div class="flex justify-end">
-								<div
-									class="max-w-[80%] rounded-3xl bg-user px-4 py-2.5 text-[15px] leading-6 whitespace-pre-wrap text-page"
-								>
-									{msg.content}
-								</div>
-							</div>
-						{:else}
-							<div class="text-[15px] leading-7 whitespace-pre-wrap">
-								{msg.content}{#if loading && !thinking && i === messages.length - 1}
-									<span
-										class="ml-0.5 inline-block h-3 w-1.5 translate-y-0.5 rounded-full bg-ink align-middle"
-									></span>
-								{/if}
-							</div>
-						{/if}
-					{/each}
+				<div class="flex min-h-full flex-1 flex-col">
+					{#if messages.length === 0 && !thinking && !pending && !liveReply}
+						<div class="flex flex-1 flex-col justify-center py-10">
+							<p class="text-3xl tracking-tight md:text-4xl">
+								Përshëndetje{data.user?.name ? `, ${data.user.name}` : ''}
+							</p>
+							<p class="mt-3 max-w-md text-[15px] leading-6 text-mute">
+								Pyet për lëndët, provimet, detyrat ose një punim. Unë të ndihmoj hap pas hapi.
+							</p>
 
-					{#if thinking}
-						<Thinking />
+							<div class="mt-8 flex flex-wrap gap-2">
+								{#each starters as item (item.label)}
+									<button
+										type="button"
+										class="rounded-full border border-line bg-chip px-4 py-2 text-sm text-ink hover:border-ink/30"
+										onclick={() => send(item.text)}
+									>
+										{item.label}
+									</button>
+								{/each}
+							</div>
+						</div>
+					{:else}
+						<div class="space-y-6 pt-4 pb-8">
+							{#if hasMore}
+								<div class="flex justify-center">
+									<button
+										type="button"
+										class="rounded-full border border-line px-4 py-1.5 text-sm text-mute hover:bg-chip"
+										onclick={loadOlder}
+										disabled={loadingOlder}
+									>
+										{loadingOlder ? 'Duke ngarkuar...' : 'Mesazhe më të vjetra'}
+									</button>
+								</div>
+							{/if}
+							{#each messages as msg, i (msg.id ?? `${i}:${msg.role}`)}
+								{#if msg.role === 'user'}
+									<div class="flex justify-end">
+										<div
+											class="max-w-[80%] rounded-3xl bg-user px-4 py-2.5 text-[15px] leading-6 whitespace-pre-wrap text-page"
+										>
+											{msg.content}
+										</div>
+									</div>
+								{:else}
+									<div class="stream-line text-[15px] leading-7 break-words whitespace-pre-wrap">
+										{msg.content}{#if liveReply && i === messages.length - 1}<span
+												class="stream-caret"
+											></span>{/if}
+									</div>
+								{/if}
+							{/each}
+
+							{#if thinking && messages.at(-1)?.role !== 'assistant'}
+								<Thinking />
+							{/if}
+						</div>
 					{/if}
 				</div>
 			{/if}
@@ -232,29 +465,30 @@
 			{#if error}
 				<p class="mt-4 text-sm text-red-400">{error}</p>
 			{/if}
-
-			<div bind:this={bottom}></div>
 		</div>
 	</main>
 
 	{#if ready}
 		<form
-			class="px-5 pb-6"
+			class="shrink-0 px-5 pt-3 pb-6"
 			onsubmit={(event) => {
 				event.preventDefault();
 				send();
 			}}
 		>
 			<div
-				class="mx-auto flex max-w-2xl items-end gap-2 rounded-full border border-line bg-chip py-2 pr-2 pl-5"
+				class="mx-auto flex max-w-2xl items-end gap-2 overflow-hidden rounded-[28px] border border-line bg-chip py-2 pr-2 pl-5"
 			>
 				<textarea
-					class="max-h-28 min-h-10 flex-1 resize-none bg-transparent py-2 text-[15px] leading-6 outline-none placeholder:text-mute"
+					class="composer max-h-36 min-h-10 flex-1 resize-none overflow-y-auto bg-transparent py-2 text-[15px] leading-6 outline-none placeholder:text-mute"
 					placeholder="Shkruaj pyetjen tënde..."
 					rows="1"
 					autocomplete="off"
+					bind:this={composer}
 					bind:value={input}
 					onkeydown={onKeydown}
+					oninput={resizeComposer}
+					onwheel={onComposerWheel}
 					disabled={loading}></textarea>
 				<button
 					type="submit"
@@ -262,15 +496,7 @@
 					disabled={loading || !input.trim()}
 					aria-label="Dërgo"
 				>
-					<svg viewBox="0 0 24 24" class="size-4" fill="none" aria-hidden="true">
-						<path
-							d="M5 12h14M13 6l6 6-6 6"
-							stroke="currentColor"
-							stroke-width="1.8"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						/>
-					</svg>
+					<ArrowRight class="size-4" strokeWidth={1.8} />
 				</button>
 			</div>
 		</form>

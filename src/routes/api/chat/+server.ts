@@ -1,7 +1,7 @@
 import { env } from '$env/dynamic/private';
 import { json } from '@sveltejs/kit';
-import { streamStudentQuestion } from '$lib/chat';
-import { addMessage, getSession, getUser, listMessages } from '$lib/server/db';
+import { addMessage, getSession, getUser, listRecentMessages } from '$lib/server/db';
+import { startReplyJob } from '$lib/server/jobs';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -27,36 +27,64 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ error: 'Biseda nuk u gjet.' }, { status: 404 });
 	}
 
-	const history = await listMessages(session.id);
-	await addMessage(locals.userId, session.id, 'user', message);
+	const history = await listRecentMessages(session.id, 20);
+	const last = history.at(-1);
+	const alreadySaved = last?.role === 'user' && last.content === message;
+	const historyForModel = alreadySaved ? history.slice(0, -1) : history;
+
+	if (!alreadySaved) {
+		await addMessage(locals.userId, session.id, 'user', message);
+	}
+
+	const job = startReplyJob(
+		session.id,
+		locals.userId,
+		message,
+		historyForModel,
+		user.name,
+		user.university
+	);
 
 	const encoder = new TextEncoder();
 
 	const readable = new ReadableStream({
 		async start(controller) {
-			let reply = '';
+			const push = (chunk: string) => {
+				try {
+					controller.enqueue(encoder.encode(chunk));
+				} catch {
+					// client left; generation still runs
+				}
+			};
+
+			let sent = 0;
+			const flush = () => {
+				const next = job.reply.slice(sent);
+				sent = job.reply.length;
+				if (next) push(next);
+			};
+
+			job.listeners.add(flush);
+			flush();
 
 			try {
-				for await (const chunk of streamStudentQuestion(
-					message,
-					history,
-					env.OPENAI_API_KEY,
-					env.OPENAI_BASE_URL,
-					env.OPENAI_MODEL || 'gpt-4o-mini',
-					user.name,
-					user.university
-				)) {
-					reply += chunk;
-					controller.enqueue(encoder.encode(chunk));
-				}
-
-				if (reply) {
-					await addMessage(locals.userId, session.id, 'assistant', reply);
-				}
-
-				controller.close();
+				await job.promise;
+				flush();
 			} catch (err) {
-				controller.error(err);
+				try {
+					controller.error(err);
+				} catch {
+					// ignore
+				}
+				return;
+			} finally {
+				job.listeners.delete(flush);
+			}
+
+			try {
+				controller.close();
+			} catch {
+				// ignore
 			}
 		}
 	});

@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { goto } from '$app/navigation';
+	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import { flip } from 'svelte/animate';
+	import { fly } from 'svelte/transition';
 	import type { ChatSession } from '$lib/types';
 
 	let {
 		sessions,
 		sessionId,
-		open = $bindable()
+		open = $bindable(false)
 	}: {
 		sessions: ChatSession[];
 		sessionId: string;
@@ -37,10 +40,11 @@
 			<p class="text-[15px]">Bisedat</p>
 			<button
 				type="button"
-				class="cursor-pointer rounded-full px-3 py-1.5 text-sm text-mute hover:bg-chip"
+				class="flex size-9 cursor-pointer items-center justify-center rounded-full text-mute hover:bg-chip hover:text-ink"
 				onclick={() => (open = false)}
+				aria-label="Mbyll bisedat"
 			>
-				Mbyll
+				<PanelLeftClose class="size-5" strokeWidth={1.8} />
 			</button>
 		</div>
 
@@ -48,11 +52,9 @@
 			method="POST"
 			action="?/newChat"
 			use:enhance={() => {
-				return async ({ result }) => {
+				return async ({ update }) => {
 					open = false;
-					if (result.type === 'redirect') {
-						await goto(result.location);
-					}
+					await update();
 				};
 			}}
 			class="mt-4"
@@ -67,15 +69,41 @@
 
 		<nav class="mt-4 flex-1 space-y-1 overflow-y-auto">
 			{#each sessions as session (session.id)}
-				<a
-					href="/?s={session.id}"
-					class="block cursor-pointer rounded-full px-4 py-2 text-sm {session.id === sessionId
-						? 'bg-chip text-ink'
-						: 'text-mute hover:bg-chip'}"
-					onclick={() => (open = false)}
+				<div
+					class="group flex items-center gap-1 rounded-full {session.id === sessionId
+						? 'bg-chip'
+						: 'hover:bg-chip'}"
+					animate:flip={{ duration: 220 }}
+					out:fly={{ x: -16, duration: 200 }}
 				>
-					{session.title}
-				</a>
+					<a
+						href="/?s={session.id}"
+						class="min-w-0 flex-1 truncate px-4 py-2 text-sm {session.id === sessionId
+							? 'text-ink'
+							: 'text-mute'}"
+						onclick={() => (open = false)}
+					>
+						{session.title}
+					</a>
+					<form
+						method="POST"
+						action="?/deleteChat"
+						use:enhance={() => {
+							return async ({ update }) => {
+								await update();
+							};
+						}}
+					>
+						<input type="hidden" name="id" value={session.id} />
+						<button
+							type="submit"
+							class="mr-1 flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-danger/80 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-danger"
+							aria-label="Fshi bisedën"
+						>
+							<Trash2 class="size-4" strokeWidth={1.8} />
+						</button>
+					</form>
+				</div>
 			{/each}
 		</nav>
 	</aside>

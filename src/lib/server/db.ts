@@ -11,7 +11,7 @@ export function db() {
 	}
 
 	if (!client) {
-		client = postgres(env.DATABASE_URL, { max: 5 });
+		client = postgres(env.DATABASE_URL, { max: 5, connect_timeout: 5 });
 	}
 
 	return client;
@@ -99,19 +99,36 @@ export async function getUser(id: string): Promise<User | null> {
 export async function saveProfile(id: string, name: string, university: string) {
 	const sql = db();
 	await sql`
-		update users
-		set name = ${name}, university = ${university}
-		where id = ${id}
+		insert into users (id, name, university)
+		values (${id}, ${name}, ${university})
+		on conflict (id) do update
+		set name = excluded.name, university = excluded.university
 	`;
 }
 
 export async function listSessions(userId: string): Promise<ChatSession[]> {
 	const sql = db();
 	return sql<ChatSession[]>`
-		select id, title, updated_at
-		from sessions
-		where user_id = ${userId}
-		order by updated_at desc
+		select s.id, s.title, s.updated_at
+		from sessions s
+		where s.user_id = ${userId}
+			and exists (
+				select 1
+				from messages m
+				where m.session_id = s.id and m.role = 'assistant'
+			)
+		order by s.updated_at desc
+	`;
+}
+
+export async function deleteEmptySessions(userId: string) {
+	const sql = db();
+	await sql`
+		delete from sessions s
+		where s.user_id = ${userId}
+			and not exists (
+				select 1 from messages m where m.session_id = s.id
+			)
 	`;
 }
 
@@ -135,14 +152,85 @@ export async function getSession(id: string, userId: string) {
 	return rows[0] ?? null;
 }
 
+export async function deleteSession(id: string, userId: string) {
+	const sql = db();
+	await sql`
+		delete from messages
+		where session_id = ${id} and user_id = ${userId}
+	`;
+	await sql`
+		delete from sessions
+		where id = ${id} and user_id = ${userId}
+	`;
+}
+
+const PAGE = 40;
+
+type MessageRow = {
+	id: string;
+	role: ChatMessage['role'];
+	content: string;
+	created_at: Date | string;
+};
+
+function mapMessage(row: MessageRow): ChatMessage {
+	return {
+		id: row.id,
+		role: row.role,
+		content: row.content,
+		created_at:
+			row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+	};
+}
+
 export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
 	const sql = db();
-	return sql<ChatMessage[]>`
-		select role, content
+	const rows = await sql<MessageRow[]>`
+		select id, role, content, created_at
 		from messages
 		where session_id = ${sessionId}
 		order by created_at
 	`;
+	return rows.map(mapMessage);
+}
+
+export async function listRecentMessages(sessionId: string, limit = 20): Promise<ChatMessage[]> {
+	const sql = db();
+	const rows = await sql<MessageRow[]>`
+		select id, role, content, created_at
+		from messages
+		where session_id = ${sessionId}
+		order by created_at desc
+		limit ${limit}
+	`;
+	return rows.reverse().map(mapMessage);
+}
+
+export async function listMessageWindow(
+	sessionId: string,
+	before?: string,
+	limit = PAGE
+): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
+	const sql = db();
+	const rows = before
+		? await sql<MessageRow[]>`
+				select id, role, content, created_at
+				from messages
+				where session_id = ${sessionId} and created_at < ${before}
+				order by created_at desc
+				limit ${limit + 1}
+			`
+		: await sql<MessageRow[]>`
+				select id, role, content, created_at
+				from messages
+				where session_id = ${sessionId}
+				order by created_at desc
+				limit ${limit + 1}
+			`;
+
+	const hasMore = rows.length > limit;
+	const page = hasMore ? rows.slice(0, limit) : rows;
+	return { messages: page.reverse().map(mapMessage), hasMore };
 }
 
 export async function addMessage(
@@ -161,13 +249,24 @@ export async function addMessage(
 		set updated_at = now()
 		where id = ${sessionId}
 	`;
+}
 
-	if (role === 'user') {
-		const title = content.length > 36 ? `${content.slice(0, 36).trim()}…` : content;
-		await sql`
-			update sessions
-			set title = ${title}
-			where id = ${sessionId} and (title = 'Bisedë e re' or title = 'Bisedë')
-		`;
-	}
+export async function setSessionTitleFromFirstQuestion(sessionId: string) {
+	const sql = db();
+	const rows = await sql<{ content: string }[]>`
+		select content
+		from messages
+		where session_id = ${sessionId} and role = 'user'
+		order by created_at
+		limit 1
+	`;
+	const text = rows[0]?.content?.trim();
+	if (!text) return;
+
+	const title = text.length > 36 ? `${text.slice(0, 36)}…` : text;
+	await sql`
+		update sessions
+		set title = ${title}, updated_at = now()
+		where id = ${sessionId}
+	`;
 }

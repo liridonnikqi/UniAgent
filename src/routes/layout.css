@@ -8,11 +8,17 @@
 	--color-line: #2e2e2b;
 	--color-chip: #1c1c1a;
 	--color-user: #f2f1ee;
+	--color-danger: #e24b3c;
+}
+
+html,
+body {
+	height: 100dvh;
+	overflow: hidden;
 }
 
 body {
 	margin: 0;
-	min-height: 100vh;
 	background: var(--color-page);
 	color: var(--color-ink);
 	font-family: var(--font-sans);
@@ -25,4 +31,42 @@ a {
 
 button:disabled {
 	cursor: not-allowed;
+}
+
+.chat-scroll,
+.composer {
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: #2e2e2b transparent;
+}
+
+.chat-scroll::-webkit-scrollbar,
+.composer::-webkit-scrollbar {
+	width: 8px;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb,
+.composer::-webkit-scrollbar-thumb {
+	background: #2e2e2b;
+	border-radius: 999px;
+}
+
+.stream-line {
+	overflow-wrap: break-word;
+}
+
+.stream-caret {
+	display: inline-block;
+	width: 1.5px;
+	height: 0.85em;
+	margin-left: 1px;
+	vertical-align: -0.1em;
+	background: currentColor;
+	animation: stream-caret 1s step-end infinite;
+}
+
+@keyframes stream-caret {
+	50% {
+		opacity: 0;
+	}
 }

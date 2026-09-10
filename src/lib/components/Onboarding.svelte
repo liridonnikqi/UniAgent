@@ -1,7 +1,30 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import type { SubmitFunction } from '@sveltejs/kit';
 
-	let { error = '' }: { error?: string } = $props();
+	let {
+		error = '',
+		name: initialName = '',
+		university: initialUniversity = ''
+	}: {
+		error?: string;
+		name?: string;
+		university?: string;
+	} = $props();
+
+	// svelte-ignore state_referenced_locally
+	let name = $state(initialName);
+	// svelte-ignore state_referenced_locally
+	let university = $state(initialUniversity);
+	let submitting = $state(false);
+
+	const onSubmit: SubmitFunction = () => {
+		submitting = true;
+		return async ({ result, update }) => {
+			if (result.type !== 'redirect') submitting = false;
+			await update({ reset: false });
+		};
+	};
 </script>
 
 <div class="flex flex-1 flex-col justify-center py-10">
@@ -10,21 +33,34 @@
 		Shkruaj emrin dhe universitetin, që t’i bëj përgjigjet më personale.
 	</p>
 
-	<form method="POST" action="?/profile" use:enhance class="mt-8 flex max-w-md flex-col gap-3">
+	<form
+		method="POST"
+		action="?/profile"
+		class="mt-8 flex max-w-md flex-col gap-3"
+		use:enhance={onSubmit}
+	>
 		<input
 			name="name"
 			required
 			autocomplete="name"
 			placeholder="Emri yt"
-			class="rounded-full border border-line bg-chip px-5 py-3 text-[15px] outline-none placeholder:text-mute"
+			bind:value={name}
+			disabled={submitting}
+			class="rounded-full border border-line bg-chip px-5 py-3 text-[15px] outline-none placeholder:text-mute disabled:opacity-70"
 		/>
 		<input
 			name="university"
 			required
 			placeholder="Universiteti"
-			class="rounded-full border border-line bg-chip px-5 py-3 text-[15px] outline-none placeholder:text-mute"
+			bind:value={university}
+			disabled={submitting}
+			class="rounded-full border border-line bg-chip px-5 py-3 text-[15px] outline-none placeholder:text-mute disabled:opacity-70"
 		/>
-		<button type="submit" class="rounded-full bg-ink px-5 py-3 text-[15px] text-page">
+		<button
+			type="submit"
+			class="rounded-full bg-ink px-5 py-3 text-[15px] text-page disabled:opacity-70"
+			disabled={submitting}
+		>
 			Vazhdo
 		</button>
 		{#if error}

@@ -9,6 +9,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ error: 'Missing OPENAI_API_KEY in .env' }, { status: 500 });
 	}
 
+	if (!locals.userId) {
+		return json({ error: 'Hyr fillimisht.' }, { status: 401 });
+	}
+
 	const user = await getUser(locals.userId);
 	if (!user?.name || !user.university) {
 		return json({ error: 'Plotëso emrin dhe universitetin fillimisht.' }, { status: 401 });

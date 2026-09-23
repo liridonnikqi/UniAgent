@@ -1,20 +1,27 @@
+import { building } from '$app/environment';
+import { auth } from '$lib/server/auth';
+import { ensureSchema } from '$lib/server/db';
+import { svelteKitHandler } from 'better-auth/svelte-kit';
 import type { Handle } from '@sveltejs/kit';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export const handle: Handle = async ({ event, resolve }) => {
-	let id = event.cookies.get('ua');
+	event.locals.user = null;
+	event.locals.session = null;
+	event.locals.userId = undefined;
 
-	if (!id || !UUID.test(id)) {
-		id = crypto.randomUUID();
-		event.cookies.set('ua', id, {
-			path: '/',
-			httpOnly: true,
-			sameSite: 'lax',
-			maxAge: 60 * 60 * 24 * 365
-		});
+	if (!building) {
+		try {
+			await ensureSchema();
+			const current = await auth.api.getSession({ headers: event.request.headers });
+			if (current) {
+				event.locals.session = current.session;
+				event.locals.user = current.user;
+				event.locals.userId = current.user.id;
+			}
+		} catch (err) {
+			console.error(err);
+		}
 	}
 
-	event.locals.userId = id;
-	return resolve(event);
+	return svelteKitHandler({ event, resolve, auth, building });
 };

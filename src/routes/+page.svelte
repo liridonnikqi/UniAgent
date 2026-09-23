@@ -3,8 +3,13 @@
 	import ArrowRight from '@lucide/svelte/icons/arrow-right';
 	import Menu from '@lucide/svelte/icons/menu';
 	import { untrack } from 'svelte';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import AssistantMessage from '$lib/components/AssistantMessage.svelte';
+	import Login from '$lib/components/Login.svelte';
+	import Logo from '$lib/components/Logo.svelte';
 	import LogoutModal from '$lib/components/LogoutModal.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
+	import ProfileModal from '$lib/components/ProfileModal.svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Thinking from '$lib/components/Thinking.svelte';
 	import type { ChatMessage } from '$lib/types';
@@ -46,6 +51,7 @@
 	let messages = $state<ChatMessage[]>(copyMessages(data.messages));
 	let sidebarOpen = $state(false);
 	let logoutOpen = $state(false);
+	let profileOpen = $state(false);
 	let input = $state('');
 	let loading = $state(false);
 	let thinking = $state(false);
@@ -150,8 +156,6 @@
 			}
 
 			if (loading || thinking || liveReply) return;
-
-			// Keep optimistic rows and older pages that the latest window does not include.
 			if (messages.length > serverMessages.length) return;
 
 			if (!sameTranscript(messages, serverMessages)) {
@@ -194,7 +198,7 @@
 
 	function stopTypewriter() {
 		if (typeTimer) {
-			clearTimeout(typeTimer);
+			cancelAnimationFrame(typeTimer);
 			typeTimer = 0;
 		}
 	}
@@ -209,39 +213,19 @@
 		messages = [...messages, { role: 'assistant', content: text, id: crypto.randomUUID() }];
 	}
 
-	function tickTypewriter() {
-		if (!incoming) {
-			typeTimer = 0;
-			return;
-		}
+	function flushStream() {
+		typeTimer = 0;
+		if (!incoming) return;
 		thinking = false;
-		const n = incoming.length > 160 ? 2 : 1;
-		writeLiveReply(liveReply + incoming.slice(0, n));
-		incoming = incoming.slice(n);
+		writeLiveReply(liveReply + incoming);
+		incoming = '';
 		stickBottom();
-		if (!incoming) {
-			typeTimer = 0;
-			return;
-		}
-		typeTimer = window.setTimeout(tickTypewriter, incoming.length > 80 ? 22 : 36);
-	}
-
-	function startTypewriter() {
-		if (typeTimer) return;
-		typeTimer = window.setTimeout(tickTypewriter, 0);
 	}
 
 	function pushStream(piece: string) {
 		if (!piece) return;
 		incoming += piece;
-		startTypewriter();
-	}
-
-	async function waitUntilTyped() {
-		while (incoming || typeTimer) {
-			await new Promise((resolve) => setTimeout(resolve, 24));
-		}
-		stopTypewriter();
+		if (!typeTimer) typeTimer = requestAnimationFrame(flushStream);
 	}
 
 	function commitLiveReply() {
@@ -295,7 +279,6 @@
 				if (piece) pushStream(piece);
 			}
 
-			await waitUntilTyped();
 			commitLiveReply();
 
 			const last = messages[messages.length - 1];
@@ -305,17 +288,20 @@
 
 			await invalidateAll();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Diçka shkoi keq';
 			thinking = false;
-			stopTypewriter();
-			incoming = '';
-			liveReply = '';
-			if (messages.at(-1)?.role === 'assistant') {
-				messages = messages.slice(0, -1);
-			}
-			if (messages.at(-1)?.role === 'user') {
-				input = question;
-				messages = messages.slice(0, -1);
+			commitLiveReply();
+			const last = messages.at(-1);
+			if (last?.role === 'assistant' && last.content) {
+				error = 'Përgjigja u ndërpre. Mund ta kopjosh atë që erdhi, ose provo përsëri.';
+			} else {
+				error = err instanceof Error ? err.message : 'Diçka shkoi keq';
+				if (last?.role === 'assistant') {
+					messages = messages.slice(0, -1);
+				}
+				if (messages.at(-1)?.role === 'user') {
+					input = question;
+					messages = messages.slice(0, -1);
+				}
 			}
 		} finally {
 			thinking = false;
@@ -352,6 +338,14 @@
 	{/if}
 
 	<LogoutModal bind:open={logoutOpen} />
+	{#if data.user}
+		<ProfileModal
+			bind:open={profileOpen}
+			name={data.user.name ?? ''}
+			university={data.user.university ?? ''}
+			error={form?.error ?? ''}
+		/>
+	{/if}
 
 	<header class="flex w-full shrink-0 items-center gap-3 px-3 py-3">
 		{#if ready}
@@ -365,22 +359,17 @@
 			</button>
 		{/if}
 
-		<p class="text-[15px] font-medium">UniAgent</p>
+		<Logo />
 
-		<div class="ml-auto flex min-w-0 items-center gap-3">
-			{#if data.user?.name}
-				<div class="flex min-w-0 items-center gap-3">
-					<p class="truncate text-sm text-mute">
-						{data.user.name} · {data.user.university}
-					</p>
-					<button
-						type="button"
-						class="cursor-pointer rounded-full bg-white px-4 py-1.5 text-sm text-page"
-						onclick={() => (logoutOpen = true)}
-					>
-						Dil
-					</button>
-				</div>
+		<div class="ml-auto min-w-0">
+			{#if data.user}
+				<AccountMenu
+					label={data.user.name && data.user.university
+						? `${data.user.name} · ${data.user.university}`
+						: (data.user.email ?? '')}
+					onProfile={() => (profileOpen = true)}
+					onLogout={() => (logoutOpen = true)}
+				/>
 			{/if}
 		</div>
 	</header>
@@ -393,11 +382,13 @@
 		<div class="mx-auto flex min-h-full max-w-2xl flex-col">
 			{#if data.dbError}
 				<p class="py-10 text-sm text-red-400">{data.dbError}</p>
+			{:else if !data.user}
+				<Login google={data.auth.google} microsoft={data.auth.microsoft} error={data.authError} />
 			{:else if !ready}
 				<Onboarding
 					error={form?.error ?? ''}
-					name={form && 'name' in form ? (form.name ?? '') : ''}
-					university={form && 'university' in form ? (form.university ?? '') : ''}
+					name={data.user.name ?? ''}
+					university={data.user.university ?? ''}
 				/>
 			{:else}
 				<div class="flex min-h-full flex-1 flex-col">
@@ -446,11 +437,10 @@
 										</div>
 									</div>
 								{:else}
-									<div class="stream-line text-[15px] leading-7 break-words whitespace-pre-wrap">
-										{msg.content}{#if liveReply && i === messages.length - 1}<span
-												class="stream-caret"
-											></span>{/if}
-									</div>
+									<AssistantMessage
+										content={msg.content}
+										live={Boolean(liveReply && i === messages.length - 1)}
+									/>
 								{/if}
 							{/each}
 

@@ -34,10 +34,7 @@
 			aria-labelledby="logout-title"
 		>
 			<p id="logout-title" class="text-lg tracking-tight">Dil nga UniAgent?</p>
-			<p class="mt-2 text-[15px] leading-6 text-mute">
-				Bisedat tuaja janë të lidhura me këtë shfletues. Nëse dilni, nuk do t’i hapni më këto
-				sesione.
-			</p>
+			<p class="mt-2 text-[15px] leading-6 text-mute">Bisedat mbeten te llogaria jote.</p>
 
 			<div class="mt-6 flex justify-end gap-2">
 				<button

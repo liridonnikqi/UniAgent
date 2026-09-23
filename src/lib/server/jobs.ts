@@ -33,6 +33,9 @@ export function startReplyJob(
 		listeners
 	};
 
+	const maxTokens = Number(env.OPENAI_MAX_TOKENS);
+	const outputLimit = Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 4096;
+
 	job.promise = (async () => {
 		try {
 			for await (const chunk of streamStudentQuestion(
@@ -43,8 +46,8 @@ export function startReplyJob(
 				env.OPENAI_MODEL || 'gpt-4o-mini',
 				studentName,
 				university,
-				Number(env.OPENAI_MAX_TOKENS) || 400,
-				env.OPENAI_REASONING_EFFORT || 'low'
+				outputLimit,
+				env.OPENAI_REASONING_EFFORT || 'high'
 			)) {
 				job.reply += chunk;
 				for (const emit of listeners) emit();
@@ -56,6 +59,16 @@ export function startReplyJob(
 			}
 
 			return job.reply;
+		} catch (err) {
+			if (job.reply) {
+				try {
+					await addMessage(userId, sessionId, 'assistant', job.reply);
+					await setSessionTitleFromFirstQuestion(sessionId);
+				} catch {
+					/* keep the stream error */
+				}
+			}
+			throw err;
 		} finally {
 			jobs.delete(sessionId);
 		}

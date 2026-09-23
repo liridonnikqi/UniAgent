@@ -11,7 +11,11 @@ export function db() {
 	}
 
 	if (!client) {
-		client = postgres(env.DATABASE_URL, { max: 5, connect_timeout: 5 });
+		client = postgres(env.DATABASE_URL, {
+			max: 5,
+			connect_timeout: 5,
+			onnotice: () => {}
+		});
 	}
 
 	return client;
@@ -20,6 +24,7 @@ export function db() {
 export type User = {
 	id: string;
 	name: string | null;
+	email: string | null;
 	university: string | null;
 };
 
@@ -54,6 +59,59 @@ export async function ensureSchema() {
 		)
 	`;
 	await sql`alter table messages add column if not exists session_id uuid`;
+	await sql`alter table users add column if not exists email text`;
+	await sql`alter table users add column if not exists email_verified boolean not null default false`;
+	await sql`alter table users add column if not exists image text`;
+	await sql`alter table users add column if not exists updated_at timestamptz not null default now()`;
+	await sql`create unique index if not exists users_email_unique on users (email)`;
+	await sql`alter table users alter column id set default gen_random_uuid()`;
+
+	await sql`
+		create table if not exists auth_session (
+			id uuid primary key default gen_random_uuid(),
+			expires_at timestamptz not null,
+			token text not null unique,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			ip_address text,
+			user_agent text,
+			user_id uuid not null references users (id) on delete cascade
+		)
+	`;
+	await sql`create index if not exists auth_session_user_id_idx on auth_session (user_id)`;
+
+	await sql`
+		create table if not exists auth_account (
+			id uuid primary key default gen_random_uuid(),
+			account_id text not null,
+			provider_id text not null,
+			user_id uuid not null references users (id) on delete cascade,
+			access_token text,
+			refresh_token text,
+			id_token text,
+			access_token_expires_at timestamptz,
+			refresh_token_expires_at timestamptz,
+			scope text,
+			password text,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		)
+	`;
+	await sql`create index if not exists auth_account_user_id_idx on auth_account (user_id)`;
+
+	await sql`
+		create table if not exists auth_verification (
+			id uuid primary key default gen_random_uuid(),
+			identifier text not null,
+			value text not null,
+			expires_at timestamptz not null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		)
+	`;
+	await sql`alter table auth_session alter column id set default gen_random_uuid()`;
+	await sql`alter table auth_account alter column id set default gen_random_uuid()`;
+	await sql`alter table auth_verification alter column id set default gen_random_uuid()`;
 
 	const orphans = await sql<{ user_id: string }[]>`
 		select distinct user_id
@@ -77,19 +135,10 @@ export async function ensureSchema() {
 	ready = true;
 }
 
-export async function ensureUser(id: string) {
-	const sql = db();
-	await sql`
-		insert into users (id)
-		values (${id})
-		on conflict (id) do nothing
-	`;
-}
-
 export async function getUser(id: string): Promise<User | null> {
 	const sql = db();
 	const rows = await sql<User[]>`
-		select id, name, university
+		select id, name, email, university
 		from users
 		where id = ${id}
 	`;
@@ -99,10 +148,9 @@ export async function getUser(id: string): Promise<User | null> {
 export async function saveProfile(id: string, name: string, university: string) {
 	const sql = db();
 	await sql`
-		insert into users (id, name, university)
-		values (${id}, ${name}, ${university})
-		on conflict (id) do update
-		set name = excluded.name, university = excluded.university
+		update users
+		set name = ${name}, university = ${university}, updated_at = now()
+		where id = ${id}
 	`;
 }
 
